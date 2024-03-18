@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SafeSquid Performance Plot v2</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Include chartjs-plugin-zoom for zoom functionality -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+    <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Roboto', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            height: 100%;
+            margin: 0;
+            padding-top: 20px;
+        }
+        .chart-container {
+            width: 80%;
+            max-width: 960px;
+            aspect-ratio: 16 / 9;
+        }
+        .selectors, .data-controller {
+            width: 80%;
+            max-width: 960px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-top: 20px;
+        }
+        select, button {
+            margin: 10px;
+            padding: 10px;
+            background-color: #FFFFFF;
+            border: 1px solid #CCCCCC;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+        }
+        button {
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="chart-container">
+        <canvas id="dataChart"></canvas>
+    </div>
+    <div class="selectors">
+        <select id="legend1"></select>
+        <select id="legend2"></select>
+    </div>
+    <div class="data-controller">
+        <button id="startWs">Start</button>
+        <button id="stopWs">Stop</button>
+        <!-- Adding a Reset Zoom button -->
+        <button id="resetZoom">Reset Zoom</button>
+    </div>
+
+    <script>
+        const legends = [
+            "Elapsed Time", "Client Connections Handled", "Client Connections Closed",
+            "Client Transactions Handled", "Client Connections in Pool", "Spare Client Threads", "Client Threads in Use",
+            "Client Threads in Waiting", "Threads Starting up", "Threads Reserved for Prefetching", "Threading Errors",
+            "Outbound Connections created", "Outbound Connections Failed", "Outbound Connection Pool Reused",
+            "Outbound Connections in Pool", "Bytes in (KBytes)", "Bytes Out (KBytes)", "Caching Objects Created in Memory",
+            "Caching Objects Removed from Memory", "DNS Queries Reused", "New DNS Queries", "DNS Query failures",
+            "Total System Memory (KBytes)", "Free System Memory (KBytes)", "SafeSquid Virtual Memory (KBytes)",
+            "SafeSquid Resident Memory (KBytes)", "SafeSquid Shared Memory (KBytes)", "SafeSquid Code Memory (KBytes)",
+            "SafeSquid Data Memory (KBytes)", "SafeSquid Library Memory (KBytes)", "Connections Handled Delta",
+            "Connections Closed Delta", "Transactions Handled Delta", "Client Pool Delta", "Spare Threads Delta",
+            "Active Threads Delta", "Threads Waiting Delta", "Threads Starting up Delta", "Threads Prefetching Delta",
+            "Threading Errors Delta", "Outbound Connections created Delta", "Outbound Connections Failed Delta",
+            "Outbound Connection Pool Reused Delta", "Outbound Connections in Pool Delta", "Bytes in (KBytes) Delta",
+            "Bytes Out (KBytes) Delta", "Caching Objects Created in Memory Delta", "Caching Objects Removed from Memory Delta",
+            "DNS Queries Reused Delta", "New DNS Queries Delta", "DNS Query failures Delta", "load avg.(1 min)",
+            "load avg.(5 min)", "load avg.(15 min)", "Running Processes", "Waiting Processes", "User Time", "System Time",
+            "Total (user + system) Time", "User Time Delta", "System Time Delta", "Total Time Delta"
+        ].filter(legend => legend !== "Time Stamp (YYYYMMDDhhmmss)");
+
+        const legendSelectors = [document.getElementById('legend1'), document.getElementById('legend2')];
+        legends.forEach(legend => {
+            legendSelectors.forEach(selector => {
+                selector.options.add(new Option(legend, legend));
+            });
+        });
+        
+        // Chart configurations
+        let chart;
+        let historicalData = [];
+
+        function initializeChart() {
+        const ctx = document.getElementById('dataChart').getContext('2d');
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: legendSelectors[0].value,
+                    data: [],
+                    borderColor: '#FF6384',
+                    backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                    borderWidth: 2,
+                    yAxisID: 'y1',
+                }, {
+                    label: legendSelectors[1].value,
+                    data: [],
+                    borderColor: '#36A2EB',
+                    backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                    borderWidth: 2,
+                    yAxisID: 'y2',
+                }]
+            },
+            options: {
+                scales: {
+                    y1: {
+                        type: 'linear',
+                        display: true,
+                        position: 'left',
+                        title: {
+                            display: true,
+                            text: legendSelectors[0].value, // Title for the left dataset
+                            font: {
+                                size: 16
+                            },
+                        }
+                    },
+                    y2: {
+                        type: 'linear',
+                        display: true,
+                        position: 'right',
+                        title: {
+                            display: true,
+                            text: legendSelectors[1].value, // Title for the left dataset
+                            font: {
+                                size: 16
+                            },
+                        },
+                        grid: {
+                            drawOnChartArea: false,
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top', // Position the entire legend on the right
+                    },
+                    zoom: {
+                        zoom: {
+                            wheel: {
+                                enabled: true,
+                            },
+                            pinch: {
+                                enabled: true,
+                            },
+                            mode: 'xy',
+                        },
+                        pan: {
+                            enabled: true,
+                            mode: 'xy',
+                        }
+                    },
+                },
+            },
+        });
+    }
+
+
+        //websocket configuration
+        let ws;
+
+        function startWebSocket() {
+            ws = new WebSocket('ws://10.200.1.187:8081');
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                historicalData.push(data);
+                updateChartData();
+            };
+        }
+
+        function stopWebSocket() {
+            if (ws) {
+                ws.close();
+            }
+        }
+        
+        // Update legend text based on select changes
+        document.getElementById('legend1').addEventListener('change', function() {
+            document.getElementById('legend1Text').textContent = this.value;
+        });
+        document.getElementById('legend2').addEventListener('change', function() {
+            document.getElementById('legend2Text').textContent = this.value;
+        });
+
+        // update chart data based on WebSocket messages
+        function updateChartData() {
+            const maxDataPoints = 20;
+            const startIndex = Math.max(historicalData.length - maxDataPoints, 0);
+            const relevantData = historicalData.slice(startIndex);
+
+            chart.data.labels = relevantData.map(data => {
+                // Assuming your timestamp format is "YYYYMMDDhhmmss"
+                const ts = data["Time Stamp (YYYYMMDDhhmmss)"];
+                return `${ts.substr(0, 4)}:${ts.substr(4, 2)}:${ts.substr(6, 2)}:${ts.substr(8, 2)}:${ts.substr(10, 2)}:${ts.substr(12, 2)}`;
+            });
+
+            //update legend as updated
+            chart.data.datasets[0].label = legendSelectors[0].value;
+            chart.data.datasets[1].label = legendSelectors[1].value;
+
+            // Update y-axis titles to match the dataset labels
+            chart.options.scales.y1.title.text = legendSelectors[0].options[legendSelectors[0].selectedIndex].text;
+            chart.options.scales.y2.title.text = legendSelectors[1].options[legendSelectors[1].selectedIndex].text;
+            
+            //update data
+            chart.data.datasets[0].data = relevantData.map(data => data[legendSelectors[0].value]);
+            chart.data.datasets[1].data = relevantData.map(data => data[legendSelectors[1].value]);
+
+            chart.update();
+        }
+
+        document.getElementById('startWs').addEventListener('click', startWebSocket);
+        document.getElementById('stopWs').addEventListener('click', stopWebSocket);
+
+        // Reset Zoom functionality
+        document.getElementById('resetZoom').addEventListener('click', function() {
+            chart.resetZoom();
+        });
+
+        initializeChart();
+    </script>
+</body>
+</html>
